@@ -12,6 +12,7 @@ plot_nls2_function <-
       tmp_inp <- inp[i,]
       row_max <- max(assay(tmp_inp), na.rm = TRUE)
       ID <- rowRanges(tmp_inp)$ID
+      seg_ID<-rowRanges(tmp_inp)$seg_ID
       f<-data.frame(bg = 0)
       if(ID %in% fit_STD$ID){
         f <- fit_STD[fit_STD$ID == ID,]
@@ -27,7 +28,8 @@ plot_nls2_function <-
              ylab = "Intensity [A.U.]",
              main = paste0("ID: ", ID,
                            " position: ", rowRanges(tmp_inp)$position,
-                           " ", decode(strand(tmp_inp))
+                           " ", decode(strand(tmp_inp)),
+                           "\n", seg_ID
              ),
              ylim = c(ylim_1 - ylim_f, ylim_2 + ylim_f),
              col = colData(inp)$replicate + 1
