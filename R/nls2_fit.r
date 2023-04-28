@@ -115,7 +115,7 @@ nls2_fit <-
       tmp_Data <- assay(FLT_inp)[rowRanges(FLT_inp)$ID %in% tmp_df$ID[i],]
       Data_fit <- data.frame(time = time, inty = as.numeric(tmp_Data))
       Data_fit <- na.omit(Data_fit)
-      # probes with flag different from "_" are selected for the model with
+      # probes with flag different from "_ABG_" are selected for the model with
       # background coefficient,
       # otherwise the model without background coefficient is applied.
       if (tmp_df$ID[i] %in% ids_ABG) {
