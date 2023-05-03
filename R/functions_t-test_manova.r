@@ -45,7 +45,9 @@ t_test_function <-
           #fragment2/the mean of the fragment1
           quot.hl <- log2(mean(frg.2.h) / mean(frg.1.h))
           #assign the fragments name to the corresponding column
-          Column <- last(as.data.frame(rowRanges(data)[, frag]))
+          Column <- as.data.frame(rowRanges(data)[,
+                 frag])
+				  Column<-Column[,ncol(Column)]
           rows <- which(Column %in% seg[j])
           if (o == "HL") {
             rowRanges(data)$FC_fragment_HL[rows] <-
