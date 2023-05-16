@@ -91,10 +91,11 @@ apply_Ttest_delay <- function(inp) {
       # linear model for both segments separately
       model1 <- lm(delay ~ position, data = df_1)
       model2 <- lm(delay ~ position, data = df_2)
-      # select the fitted delay at the last point from the first fragment and the first...
+      # select joint comparison point between last point from the first fragment and the first...
       # ...point from the second fragment
-      del_p1 <- df_1$position[nrow(df_1)]*coef(model1)[2]+coef(model1)[1]
-      del_p2 <- df_2$position[1]*coef(model2)[2]+coef(model2)[1]
+      comp_position<- (df_2$position[1] - df_1$position[nrow(df_1)])/2 + df_1$position[nrow(df_1)]
+      del_p1 <- comp_position*coef(model1)[2]+coef(model1)[1]
+      del_p2 <- comp_position*coef(model2)[2]+coef(model2)[1]
       # sum up residuals to the point indicated above
       res_model1 <- residuals(model1) + del_p1
       res_model2 <- residuals(model2) + del_p2
