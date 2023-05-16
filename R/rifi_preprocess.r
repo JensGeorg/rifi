@@ -177,6 +177,8 @@ rifi_preprocess <-
         )
       }
     )
+    metadata(inp)$sessioninfo<-sessionInfo()
+    metadata(inp)$date_of_analysis<-date()
     res <- inp
     res
   }
