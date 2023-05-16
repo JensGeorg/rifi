@@ -95,9 +95,9 @@ apply_Ttest_delay <- function(inp) {
       # ...point from the second fragment
       del_p1 <- last(df_1$delay)
       del_p2 <- df_2$delay[1]
-      # sum up absolute residuals to the point indicated above
-      res_model1 <- abs(residuals(model1)) + del_p1
-      res_model2 <- abs(residuals(model2)) + del_p2
+      # sum up residuals to the point indicated above
+      res_model1 <- residuals(model1) + del_p1
+      res_model2 <- residuals(model2) + del_p2
       tryCatch({
         # run t-test between both sum of residuals and the point...
         # ...selected for statistics
