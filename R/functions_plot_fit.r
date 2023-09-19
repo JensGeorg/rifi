@@ -12,7 +12,7 @@ plot_nls2_function <-
       tmp_inp <- inp[i,]
       row_max <- max(assay(tmp_inp), na.rm = TRUE)
       ID <- rowRanges(tmp_inp)$ID
-      seg_ID<-rowRanges(tmp_inp)$seg_ID
+      seg_ID<-rowRanges(tmp_inp)$position_segment
       f<-data.frame(bg = 0)
       if(ID %in% fit_STD$ID){
         f <- fit_STD[fit_STD$ID == ID,]
