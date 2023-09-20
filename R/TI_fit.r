@@ -168,16 +168,7 @@ TI_fit <-
                                }
                              ))
       }
-      #get the one with minimum ti in range of restr
-      rss <- lapply(halfLE2, deviance)
-      no_rss <- unlist(lapply(rss, is.null))
-      halfLE2 <- halfLE2[!no_rss]
-      min_rss <- min(unlist(rss)[unlist(rss) != 0])
-      in_range <- which(unlist(rss) <= min_rss * (1 + restr))
-      halfLE2 <- halfLE2[in_range]
-      co <- lapply(halfLE2, function(x) coef(x)[5])
-      min_co <- which.min(unlist(co))[1]
-      halfLE2 <- halfLE2[[min_co]]
+     
       tryCatch({
         if (is.null(halfLE2)[1] | is.na(halfLE2)[1]) {
           decay_v <- NA
@@ -187,6 +178,16 @@ TI_fit <-
           ti_v <- NA
           bg_v <- 0
         } else {
+          #get the one with minimum ti in range of restr
+          rss <- lapply(halfLE2, deviance)
+          no_rss <- unlist(lapply(rss, is.null))
+          halfLE2 <- halfLE2[!no_rss]
+          min_rss <- min(unlist(rss)[unlist(rss) != 0])
+          in_range <- which(unlist(rss) <= min_rss * (1 + restr))
+          halfLE2 <- halfLE2[in_range]
+          co <- lapply(halfLE2, function(x) coef(x)[5])
+          min_co <- which.min(unlist(co))[1]
+          halfLE2 <- halfLE2[[min_co]]
           decay_v <- coef(halfLE2)[1]
           ti_delay_v <- coef(halfLE2)[2]
           k_v <- coef(halfLE2)[3]
