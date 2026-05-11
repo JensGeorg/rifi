@@ -78,40 +78,23 @@ TI_fit <-
     }
     FLT_inp <- inp
     assay(FLT_inp)[decode_FLT(FLT_inp)] <- NA
-    #normalize
     row_max <- apply(assay(FLT_inp), 1, max, na.rm = TRUE)
     assay(FLT_inp) <- assay(FLT_inp)/row_max
-    #make the tmp_df
     tmp_df <- inp_df(FLT_inp, "ID", "position", "flag")
-    #only STD
     tmp_df <- tmp_df[grepl("_TI_", tmp_df$flag), ]
-    #reset the values
     rowRanges(inp)$delay[rowRanges(inp)$ID %in% tmp_df$ID] <- NA
     rowRanges(inp)$half_life[rowRanges(inp)$ID %in% tmp_df$ID] <- NA
     rowRanges(inp)$TI_termination_factor[rowRanges(inp)$ID %in% tmp_df$ID] <- NA
-    #IDs
-    ids_ABG <- tmp_df$ID[grepl("ABG",tmp_df$flag)]
-    #time points
-    time <- metadata(FLT_inp)$timepoints
-    #start values
-    st_STD <- expand.grid(decay = decay, ti_delay = ti_delay, k = k,
-                          rest_delay = rest_delay, ti = ti, bg = bg)
-    st_ABG <- expand.grid(decay = decay, ti_delay = ti_delay, k = k,
-                          rest_delay = rest_delay, ti = ti)
-    
-    ###################################################################
-    #boarders
-    # upper_STD <- list(decay = log(2)/(1/60), ti_delay = max(time),
-    #                   k = 1/(log(2)/(60)), rest_delay = max(time),
-    #                   ti = 1/(log(2)/(60)))
+    ids_ABG  <- tmp_df$ID[grepl("ABG", tmp_df$flag)]
+    time     <- metadata(FLT_inp)$timepoints
+    st_STD   <- expand.grid(decay = decay, ti_delay = ti_delay, k = k,
+                            rest_delay = rest_delay, ti = ti, bg = bg)
+    st_ABG   <- expand.grid(decay = decay, ti_delay = ti_delay, k = k,
+                            rest_delay = rest_delay, ti = ti)
     lower_STD <- list(decay = log(2)/(60), ti_delay = 0, k = log(2)/(60),
                       rest_delay = 0, ti = 0, bg = 0)
-    # upper_ABG <- list(decay = log(2)/(1/60), ti_delay = max(time),
-    #                   k = 1/(log(2)/(60)), rest_delay = max(time),
-    #                   ti = 1/(log(2)/(60)))
     lower_ABG <- list(decay = log(2)/(60), ti_delay = 0, k = log(2)/(60),
                       rest_delay = 0, ti = 0)
-    #models
     model_STD <- inty ~ I(time < ti_delay) * I(k / decay - ti / decay + bg) +
       I(time < ti_delay + rest_delay & time >= ti_delay) *
       I(k / decay - ti / decay * exp(-decay * (time - ti_delay)) + bg) +
@@ -125,78 +108,102 @@ TI_fit <-
       I((k / decay - ti / decay * exp(-decay * rest_delay)) *
           exp(-decay * (time - (ti_delay + rest_delay))))
 
+    # helper: extract SE and t/p-values from a single TI fit object safely
+    extract_se_TI <- function(fit, id, is_ABG = FALSE) {
+      null_result <- list(
+        se_decay      = NA, t_decay      = NA, p_decay      = NA,
+        se_ti_delay   = NA, t_ti_delay   = NA, p_ti_delay   = NA,
+        se_k          = NA, t_k          = NA, p_k          = NA,
+        se_rest_delay = NA, t_rest_delay = NA, p_rest_delay = NA,
+        se_ti         = NA, t_ti         = NA, p_ti         = NA,
+        se_bg         = NA, t_bg         = NA, p_bg         = NA
+      )
+      if (is.null(fit) || any(is.na(fit))) return(null_result)
+      tryCatch({
+        coef_tab <- summary(fit)$coefficients
+        get_val <- function(par, col) {
+          if (par %in% rownames(coef_tab)) coef_tab[par, col] else NA
+        }
+        list(
+          se_decay      = get_val("decay",      "Std. Error"),
+          t_decay       = get_val("decay",      "t value"),
+          p_decay       = get_val("decay",      "Pr(>|t|)"),
+          se_ti_delay   = get_val("ti_delay",   "Std. Error"),
+          t_ti_delay    = get_val("ti_delay",   "t value"),
+          p_ti_delay    = get_val("ti_delay",   "Pr(>|t|)"),
+          se_k          = get_val("k",          "Std. Error"),
+          t_k           = get_val("k",          "t value"),
+          p_k           = get_val("k",          "Pr(>|t|)"),
+          se_rest_delay = get_val("rest_delay", "Std. Error"),
+          t_rest_delay  = get_val("rest_delay", "t value"),
+          p_rest_delay  = get_val("rest_delay", "Pr(>|t|)"),
+          se_ti         = get_val("ti",         "Std. Error"),
+          t_ti          = get_val("ti",         "t value"),
+          p_ti          = get_val("ti",         "Pr(>|t|)"),
+          se_bg         = if (is_ABG) NA else get_val("bg", "Std. Error"),
+          t_bg          = if (is_ABG) NA else get_val("bg", "t value"),
+          p_bg          = if (is_ABG) NA else get_val("bg", "Pr(>|t|)")
+        )
+      },
+      error = function(e) {
+        message("summary() failed for ID: ", id, " — ", conditionMessage(e))
+        null_result
+      },
+      warning = function(w) {
+        message("summary() warning for ID: ", id, " — ", conditionMessage(w))
+        null_result
+      })
+    }
+
     n_fit <- mclapply(seq_len(nrow(tmp_df)), function(i) {
-      #get the Data
       tmp_Data <- assay(FLT_inp)[rowRanges(FLT_inp)$ID %in% tmp_df$ID[i],]
       Data_fit <- data.frame(time = time, inty = as.numeric(tmp_Data))
       Data_fit <- na.omit(Data_fit)
-      # probes with flag different from "_" are selected for the model with
-      # background coefficient,
-      # otherwise the model without background coefficient is applied.
-      if (tmp_df$ID[i] %in% ids_ABG) {
-        cc <- capture.output(type="message",
+      is_ABG   <- tmp_df$ID[i] %in% ids_ABG
+
+      if (is_ABG) {
+        cc <- capture.output(type = "message",
                              halfLE2 <- tryCatch({
-                               halfLE2 <- nls2(
-                                 model_ABG,
-                                 data = Data_fit,
-                                 algorithm = "port",
-                                 control = list(warnOnly = TRUE),
-                                 start = st_ABG,
-                                 lower = lower_STD,
-                                 #upper = upper_STD,
-                                 all = TRUE
-                               )},
-                               error = function(e) {
-                                 return(list(NULL))
-                               }
-                             ))
+                               nls2(model_ABG, data = Data_fit,
+                                    algorithm = "port",
+                                    control = list(warnOnly = TRUE),
+                                    start = st_ABG, lower = lower_ABG,
+                                    all = TRUE)
+                             }, error = function(e) return(list(NULL))))
       } else {
-        cc <- capture.output(type="message",
+        cc <- capture.output(type = "message",
                              halfLE2 <- tryCatch({
-                               halfLE2 <- nls2(
-                                 model_STD,
-                                 data = Data_fit,
-                                 algorithm = "port",
-                                 control = list(warnOnly = TRUE),
-                                 start = st_STD,
-                                 lower = lower_STD,
-                                 # upper = upper_STD,
-                                 all = TRUE
-                               )},
-                               error = function(e) {
-                                 return(list(NULL))
-                               }
-                             ))
+                               nls2(model_STD, data = Data_fit,
+                                    algorithm = "port",
+                                    control = list(warnOnly = TRUE),
+                                    start = st_STD, lower = lower_STD,
+                                    all = TRUE)
+                             }, error = function(e) return(list(NULL))))
       }
-     
+
+      # select best fit using minimum TI criterion within restr tolerance
+      best_fit <- NULL
       tryCatch({
         if (is.null(halfLE2)[1] | is.na(halfLE2)[1]) {
-          decay_v <- NA
-          ti_delay_v <- NA
-          k_v <- NA
-          rest_delay_v <- NA
-          ti_v <- NA
-          bg_v <- 0
+          decay_v <- NA; ti_delay_v <- NA; k_v <- NA
+          rest_delay_v <- NA; ti_v <- NA; bg_v <- 0
         } else {
-          #get the one with minimum ti in range of restr
-          rss <- lapply(halfLE2, deviance)
-          no_rss <- unlist(lapply(rss, is.null))
-          halfLE2 <- halfLE2[!no_rss]
-          min_rss <- min(unlist(rss)[unlist(rss) != 0])
+          rss      <- lapply(halfLE2, deviance)
+          no_rss   <- unlist(lapply(rss, is.null))
+          halfLE2  <- halfLE2[!no_rss]
+          min_rss  <- min(unlist(rss)[unlist(rss) != 0])
           in_range <- which(unlist(rss) <= min_rss * (1 + restr))
-          halfLE2 <- halfLE2[in_range]
-          co <- lapply(halfLE2, function(x) coef(x)[5])
-          min_co <- which.min(unlist(co))[1]
-          halfLE2 <- halfLE2[[min_co]]
-          decay_v <- coef(halfLE2)[1]
-          ti_delay_v <- coef(halfLE2)[2]
-          k_v <- coef(halfLE2)[3]
-          rest_delay_v <- coef(halfLE2)[4]
-          ti_v <- coef(halfLE2)[5]
-          bg_v <- 0
-          if (length(coef(halfLE2)) == 6) {
-            bg_v <- coef(halfLE2)[6]
-          }
+          halfLE2  <- halfLE2[in_range]
+          co       <- lapply(halfLE2, function(x) coef(x)[5])
+          min_co   <- which.min(unlist(co))[1]
+          best_fit <- halfLE2[[min_co]]      # store for SE extraction
+          decay_v      <- coef(best_fit)[1]
+          ti_delay_v   <- coef(best_fit)[2]
+          k_v          <- coef(best_fit)[3]
+          rest_delay_v <- coef(best_fit)[4]
+          ti_v         <- coef(best_fit)[5]
+          bg_v         <- 0
+          if (length(coef(best_fit)) == 6) bg_v <- coef(best_fit)[6]
         }
       },
       warning = function(war) {
@@ -204,37 +211,99 @@ TI_fit <-
       },
       error = function(err) {
         print(paste("my error in processing HalfLE2:", i, err))
-      }
+      })
+
+      # extract SE / t / p from the selected best fit
+      se_vals <- extract_se_TI(best_fit, id = tmp_df$ID[i], is_ABG = is_ABG)
+
+      data_c <- data.frame(
+        ID           = tmp_df$ID[i],
+        position     = tmp_df$position[i],
+        ti_delay     = ti_delay_v,
+        rest_delay   = rest_delay_v,
+        decay        = decay_v,
+        k            = k_v,
+        ti           = ti_v,
+        bg           = bg_v,
+        # decay
+        se_decay     = se_vals$se_decay,
+        t_decay      = se_vals$t_decay,
+        p_decay      = se_vals$p_decay,
+        # ti_delay
+        se_ti_delay  = se_vals$se_ti_delay,
+        t_ti_delay   = se_vals$t_ti_delay,
+        p_ti_delay   = se_vals$p_ti_delay,
+        # k
+        se_k         = se_vals$se_k,
+        t_k          = se_vals$t_k,
+        p_k          = se_vals$p_k,
+        # rest_delay
+        se_rest_delay = se_vals$se_rest_delay,
+        t_rest_delay  = se_vals$t_rest_delay,
+        p_rest_delay  = se_vals$p_rest_delay,
+        # ti
+        se_ti        = se_vals$se_ti,
+        t_ti         = se_vals$t_ti,
+        p_ti         = se_vals$p_ti,
+        # bg (NA for ABG probes)
+        se_bg        = se_vals$se_bg,
+        t_bg         = se_vals$t_bg,
+        p_bg         = se_vals$p_bg
       )
-      data_c <- data.frame(tmp_df$ID[i], tmp_df$position[i], ti_delay_v,
-                           rest_delay_v, decay_v, k_v, ti_v, bg_v)
-      colnames(data_c) <-
-        c("ID", "position", "ti_delay", "rest_delay", "decay", "k", "ti", "bg")
       return(data_c)
     }, mc.preschedule = FALSE, mc.cores = cores)
+
     fit_nls2 <- as.data.frame(do.call(rbind, n_fit))
     if (length(n_fit) == 0) {
-      fit_nls2 <- data.frame(matrix(nrow = 0, ncol = 8))
-      colnames(fit_nls2) <-
-        c("ID", "position", "ti_delay", "rest_delay", "decay", "k", "ti", "bg")
+      fit_nls2 <- data.frame(matrix(nrow = 0, ncol = 26))
+      colnames(fit_nls2) <- c(
+        "ID", "position", "ti_delay", "rest_delay", "decay", "k", "ti", "bg",
+        "se_decay",      "t_decay",      "p_decay",
+        "se_ti_delay",   "t_ti_delay",   "p_ti_delay",
+        "se_k",          "t_k",          "p_k",
+        "se_rest_delay", "t_rest_delay", "p_rest_delay",
+        "se_ti",         "t_ti",         "p_ti",
+        "se_bg",         "t_bg",         "p_bg"
+      )
     }
-    inp <- inp[order(rowRanges(inp)$ID), ]
+
+    inp     <- inp[order(rowRanges(inp)$ID), ]
     fit_nls2 <- fit_nls2[order(fit_nls2$ID), ]
-    
+
     metadata(inp)$fit_TI <- fit_nls2
-    
+
+    # assign core results to rowRanges
     rowRanges(inp)$delay[rowRanges(inp)$ID %in% tmp_df$ID] <-
       fit_nls2$ti_delay + fit_nls2$rest_delay
-    rowData(inp)$delay[!is.finite(rowData(inp)$delay)]<-NA
+    rowData(inp)$delay[!is.finite(rowData(inp)$delay)] <- NA
     rowRanges(inp)$half_life[rowRanges(inp)$ID %in% tmp_df$ID] <-
       log(2) / fit_nls2$decay
-    rowData(inp)$half_life[!is.finite(rowData(inp)$half_life)]<-NA
+    rowData(inp)$half_life[!is.finite(rowData(inp)$half_life)] <- NA
     rowRanges(inp)$TI_termination_factor[rowRanges(inp)$ID %in% tmp_df$ID] <-
       fit_nls2$ti / fit_nls2$k
     rowData(inp)$TI_termination_factor[
-      !is.finite(rowData(inp)$TI_termination_factor)]<-NA
-    
+      !is.finite(rowData(inp)$TI_termination_factor)] <- NA
+
+    # initialise SE/t/p columns in rowRanges if absent
+    se_cols <- c("se_decay",      "t_decay",      "p_decay",
+                 "se_ti_delay",   "t_ti_delay",   "p_ti_delay",
+                 "se_k",          "t_k",          "p_k",
+                 "se_rest_delay", "t_rest_delay", "p_rest_delay",
+                 "se_ti",         "t_ti",         "p_ti",
+                 "se_bg",         "t_bg",         "p_bg")
+    for (col in se_cols) {
+      if (!col %in% names(mcols(rowRanges(inp)))) {
+        rowRanges(inp)[[col]] <- as.numeric(NA)
+      }
+    }
+
+    # assign SE/t/p to rowRanges
+    idx <- rowRanges(inp)$ID %in% tmp_df$ID
+    for (col in se_cols) {
+      rowRanges(inp)[[col]][idx] <- fit_nls2[[col]]
+      rowData(inp)[[col]][!is.finite(rowData(inp)[[col]])] <- NA
+    }
+
     inp <- inp_order(inp)
-    
     inp
   }
