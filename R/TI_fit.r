@@ -67,14 +67,16 @@ TI_fit <-
            rest_delay = seq(0, 2, by = 0.5),
            bg = 0) {
     inp <- inp_order(inp)
-    if(!"delay" %in% names(mcols(rowRanges(inp)))){
-      rowRanges(inp)$delay <- as.numeric(NA)
+    
+    # Use rowData instead of mcols(rowRanges(...))
+    if(!"delay" %in% names(rowData(inp))){
+      rowData(inp)$delay <- as.numeric(NA)
     }
-    if(!"half_life" %in% names(mcols(rowRanges(inp)))){
-      rowRanges(inp)$half_life <- as.numeric(NA)
+    if(!"half_life" %in% names(rowData(inp))){
+      rowData(inp)$half_life <- as.numeric(NA)
     }
-    if(!"TI_termination_factor" %in% names(mcols(rowRanges(inp)))){
-      rowRanges(inp)$TI_termination_factor <- as.numeric(NA)
+    if(!"TI_termination_factor" %in% names(rowData(inp))){
+      rowData(inp)$TI_termination_factor <- as.numeric(NA)
     }
     FLT_inp <- inp
     assay(FLT_inp)[decode_FLT(FLT_inp)] <- NA
@@ -82,9 +84,11 @@ TI_fit <-
     assay(FLT_inp) <- assay(FLT_inp)/row_max
     tmp_df <- inp_df(FLT_inp, "ID", "position", "flag")
     tmp_df <- tmp_df[grepl("_TI_", tmp_df$flag), ]
-    rowRanges(inp)$delay[rowRanges(inp)$ID %in% tmp_df$ID] <- NA
-    rowRanges(inp)$half_life[rowRanges(inp)$ID %in% tmp_df$ID] <- NA
-    rowRanges(inp)$TI_termination_factor[rowRanges(inp)$ID %in% tmp_df$ID] <- NA
+    
+    # Safely assign to rowData
+    rowData(inp)$delay[rowData(inp)$ID %in% tmp_df$ID] <- NA
+    rowData(inp)$half_life[rowData(inp)$ID %in% tmp_df$ID] <- NA
+    rowData(inp)$TI_termination_factor[rowData(inp)$ID %in% tmp_df$ID] <- NA
     ids_ABG  <- tmp_df$ID[grepl("ABG", tmp_df$flag)]
     time     <- metadata(FLT_inp)$timepoints
     st_STD   <- expand.grid(decay = decay, ti_delay = ti_delay, k = k,
@@ -156,7 +160,7 @@ TI_fit <-
     }
 
     n_fit <- mclapply(seq_len(nrow(tmp_df)), function(i) {
-      tmp_Data <- assay(FLT_inp)[rowRanges(FLT_inp)$ID %in% tmp_df$ID[i],]
+      tmp_Data <- assay(FLT_inp)[rowData(FLT_inp)$ID %in% tmp_df$ID[i],]
       Data_fit <- data.frame(time = time, inty = as.numeric(tmp_Data))
       Data_fit <- na.omit(Data_fit)
       is_ABG   <- tmp_df$ID[i] %in% ids_ABG
@@ -181,7 +185,6 @@ TI_fit <-
                              }, error = function(e) return(list(NULL))))
       }
 
-      # select best fit using minimum TI criterion within restr tolerance
       best_fit <- NULL
       tryCatch({
         if (is.null(halfLE2)[1] | is.na(halfLE2)[1]) {
@@ -196,7 +199,7 @@ TI_fit <-
           halfLE2  <- halfLE2[in_range]
           co       <- lapply(halfLE2, function(x) coef(x)[5])
           min_co   <- which.min(unlist(co))[1]
-          best_fit <- halfLE2[[min_co]]      # store for SE extraction
+          best_fit <- halfLE2[[min_co]]     
           decay_v      <- coef(best_fit)[1]
           ti_delay_v   <- coef(best_fit)[2]
           k_v          <- coef(best_fit)[3]
@@ -213,7 +216,6 @@ TI_fit <-
         print(paste("my error in processing HalfLE2:", i, err))
       })
 
-      # extract SE / t / p from the selected best fit
       se_vals <- extract_se_TI(best_fit, id = tmp_df$ID[i], is_ABG = is_ABG)
 
       data_c <- data.frame(
@@ -225,27 +227,21 @@ TI_fit <-
         k            = k_v,
         ti           = ti_v,
         bg           = bg_v,
-        # decay
         se_decay     = se_vals$se_decay,
         t_decay      = se_vals$t_decay,
         p_decay      = se_vals$p_decay,
-        # ti_delay
         se_ti_delay  = se_vals$se_ti_delay,
         t_ti_delay   = se_vals$t_ti_delay,
         p_ti_delay   = se_vals$p_ti_delay,
-        # k
         se_k         = se_vals$se_k,
         t_k          = se_vals$t_k,
         p_k          = se_vals$p_k,
-        # rest_delay
         se_rest_delay = se_vals$se_rest_delay,
         t_rest_delay  = se_vals$t_rest_delay,
         p_rest_delay  = se_vals$p_rest_delay,
-        # ti
         se_ti        = se_vals$se_ti,
         t_ti         = se_vals$t_ti,
         p_ti         = se_vals$p_ti,
-        # bg (NA for ABG probes)
         se_bg        = se_vals$se_bg,
         t_bg         = se_vals$t_bg,
         p_bg         = se_vals$p_bg
@@ -253,55 +249,76 @@ TI_fit <-
       return(data_c)
     }, mc.preschedule = FALSE, mc.cores = cores)
 
-    fit_nls2 <- as.data.frame(do.call(rbind, n_fit))
+    all_cols <- c(
+      "ID", "position", "ti_delay", "rest_delay", "decay", "k", "ti", "bg",
+      "se_decay",      "t_decay",      "p_decay",
+      "se_ti_delay",   "t_ti_delay",   "p_ti_delay",
+      "se_k",          "t_k",          "p_k",
+      "se_rest_delay", "t_rest_delay", "p_rest_delay",
+      "se_ti",         "t_ti",         "p_ti",
+      "se_bg",         "t_bg",         "p_bg")
+    numeric_cols <- setdiff(all_cols, c("ID", "position"))
+
     if (length(n_fit) == 0) {
-      fit_nls2 <- data.frame(matrix(nrow = 0, ncol = 26))
-      colnames(fit_nls2) <- c(
-        "ID", "position", "ti_delay", "rest_delay", "decay", "k", "ti", "bg",
-        "se_decay",      "t_decay",      "p_decay",
-        "se_ti_delay",   "t_ti_delay",   "p_ti_delay",
-        "se_k",          "t_k",          "p_k",
-        "se_rest_delay", "t_rest_delay", "p_rest_delay",
-        "se_ti",         "t_ti",         "p_ti",
-        "se_bg",         "t_bg",         "p_bg"
-      )
+      fit_nls2 <- as.data.frame(
+        matrix(nrow = 0, ncol = length(all_cols)),
+        stringsAsFactors = FALSE)
+      colnames(fit_nls2) <- all_cols
+    } else {
+      fit_nls2 <- as.data.frame(
+        setNames(
+          lapply(all_cols, function(col) {
+            vals <- sapply(n_fit, function(row) {
+              v <- row[[col]]
+              if (is.null(v) || length(v) == 0) return(NA)
+              v[[1]]
+            })
+            if (col %in% numeric_cols) as.numeric(vals) else as.character(vals)
+          }),
+          all_cols),
+        stringsAsFactors = FALSE)
     }
 
-    inp     <- inp[order(rowRanges(inp)$ID), ]
+    # Order correctly referencing rowData
+    inp     <- inp[order(rowData(inp)$ID), ]
     fit_nls2 <- fit_nls2[order(fit_nls2$ID), ]
 
     metadata(inp)$fit_TI <- fit_nls2
 
-    # assign core results to rowRanges
-    rowRanges(inp)$delay[rowRanges(inp)$ID %in% tmp_df$ID] <-
+    # ALL metadata assignment strictly defaults to rowData
+    rowData(inp)$delay[rowData(inp)$ID %in% tmp_df$ID] <-
       fit_nls2$ti_delay + fit_nls2$rest_delay
     rowData(inp)$delay[!is.finite(rowData(inp)$delay)] <- NA
-    rowRanges(inp)$half_life[rowRanges(inp)$ID %in% tmp_df$ID] <-
+    
+    rowData(inp)$half_life[rowData(inp)$ID %in% tmp_df$ID] <-
       log(2) / fit_nls2$decay
     rowData(inp)$half_life[!is.finite(rowData(inp)$half_life)] <- NA
-    rowRanges(inp)$TI_termination_factor[rowRanges(inp)$ID %in% tmp_df$ID] <-
+    
+    rowData(inp)$TI_termination_factor[rowData(inp)$ID %in% tmp_df$ID] <-
       fit_nls2$ti / fit_nls2$k
     rowData(inp)$TI_termination_factor[
       !is.finite(rowData(inp)$TI_termination_factor)] <- NA
 
-    # initialise SE/t/p columns in rowRanges if absent
+    # Initialise SE/t/p columns safely in rowData DataFrame directly
     se_cols <- c("se_decay",      "t_decay",      "p_decay",
                  "se_ti_delay",   "t_ti_delay",   "p_ti_delay",
                  "se_k",          "t_k",          "p_k",
                  "se_rest_delay", "t_rest_delay", "p_rest_delay",
                  "se_ti",         "t_ti",         "p_ti",
                  "se_bg",         "t_bg",         "p_bg")
+                 
     for (col in se_cols) {
-      if (!col %in% names(mcols(rowRanges(inp)))) {
-        rowRanges(inp)[[col]] <- as.numeric(NA)
+      if (!col %in% names(rowData(inp))) {
+        rowData(inp)[[col]] <- rep(as.numeric(NA), nrow(inp))
       }
     }
 
-    # assign SE/t/p to rowRanges
-    idx <- rowRanges(inp)$ID %in% tmp_df$ID
+    # Assign SE/t/p directly into the rowData
+    idx <- rowData(inp)$ID %in% tmp_df$ID
     for (col in se_cols) {
-      rowRanges(inp)[[col]][idx] <- fit_nls2[[col]]
-      rowData(inp)[[col]][!is.finite(rowData(inp)[[col]])] <- NA
+      vals <- as.numeric(fit_nls2[[col]])
+      vals[!is.finite(vals)] <- NA
+      rowData(inp)[[col]][idx] <- vals
     }
 
     inp <- inp_order(inp)
