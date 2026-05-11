@@ -61,7 +61,7 @@
 #' 
 #' @export
 
-nls2_fit <-
+nls2_fit<-
   function(inp,
            cores = 1,
            decay = seq(.01, .11, by = .02),
@@ -69,11 +69,13 @@ nls2_fit <-
            k = seq(0.1, 1, 0.2),
            bg = 0.2) {
     inp <- inp_order(inp)
-    if(!"delay" %in% names(mcols(rowRanges(inp)))){
-      rowRanges(inp)$delay <- as.numeric(NA)
+    
+    # Safe checks natively against rowData instead of mcols
+    if(!"delay" %in% names(rowData(inp))){
+      rowData(inp)$delay <- as.numeric(NA)
     }
-    if(!"half_life" %in% names(mcols(rowRanges(inp)))){
-      rowRanges(inp)$half_life <- as.numeric(NA)
+    if(!"half_life" %in% names(rowData(inp))){
+      rowData(inp)$half_life <- as.numeric(NA)
     }
     FLT_inp <- inp
     assay(FLT_inp)[decode_FLT(FLT_inp)] <- NA
@@ -81,10 +83,12 @@ nls2_fit <-
     assay(FLT_inp) <- assay(FLT_inp)/row_max
     tmp_df <- inp_df(FLT_inp, "ID", "position", "flag")
     tmp_df <- tmp_df[!grepl("_TI_", tmp_df$flag), ]
-    rowRanges(inp)$delay[rowRanges(inp)$ID %in% tmp_df$ID] <- NA
-    rowRanges(inp)$half_life[rowRanges(inp)$ID %in% tmp_df$ID] <- NA
+    
+    rowData(inp)$delay[rowData(inp)$ID %in% tmp_df$ID] <- NA
+    rowData(inp)$half_life[rowData(inp)$ID %in% tmp_df$ID] <- NA
     ids_ABG <- tmp_df$ID[grepl("ABG", tmp_df$flag)]
     time <- metadata(FLT_inp)$timepoints
+    
     st_STD <- expand.grid(decay = decay, delay = delay, k = k, bg = bg)
     st_ABG <- expand.grid(decay = decay, delay = delay, k = k)
     upper_STD <- list(decay = log(2)/(1/60), delay = max(time),
@@ -99,10 +103,7 @@ nls2_fit <-
     model_ABG <- inty ~ I(time < delay) * I(k / decay) +
       (time >= delay) * I(k / decay * (exp(-decay * (time - delay))))
 
-    # helper: extract SE and t/p-values from a fit object safely
     extract_se <- function(fit, param, is_ABG = FALSE) {
-      # returns named list: se, t, p for each parameter
-      # fallback to NA if summary fails or parameter absent
       null_result <- list(
         se_decay = NA, t_decay = NA, p_decay = NA,
         se_delay = NA, t_delay = NA, p_delay = NA,
@@ -112,7 +113,6 @@ nls2_fit <-
       if (is.null(fit) || any(is.na(fit))) return(null_result)
       tryCatch({
         coef_tab <- summary(fit)$coefficients
-        # summary returns matrix: rows = params, cols = Estimate/SE/t/p
         get_val <- function(par, col) {
           if (par %in% rownames(coef_tab)) coef_tab[par, col] else NA
         }
@@ -142,7 +142,7 @@ nls2_fit <-
     }
 
     n_fit <- mclapply(seq_len(nrow(tmp_df)), function(i) {
-      tmp_Data <- assay(FLT_inp)[rowRanges(FLT_inp)$ID %in% tmp_df$ID[i],]
+      tmp_Data <- assay(FLT_inp)[rowData(FLT_inp)$ID %in% tmp_df$ID[i],]
       Data_fit <- data.frame(time = time, inty = as.numeric(tmp_Data))
       Data_fit <- na.omit(Data_fit)
       is_ABG <- tmp_df$ID[i] %in% ids_ABG
@@ -165,7 +165,6 @@ nls2_fit <-
                              }, error = function(e) NULL))
       }
 
-      # extract coefficients
       tryCatch({
         if (is.null(halfLE2)[1] | is.na(halfLE2)[1]) {
           decay_v <- NA; delay_v <- NA; bg_v <- 0; k_v <- NA
@@ -184,7 +183,6 @@ nls2_fit <-
         print(paste("my error in processing HalfLE2:", i, err))
       })
 
-      # extract SE / t / p
       se_vals <- extract_se(halfLE2, param = tmp_df$ID[i], is_ABG = is_ABG)
 
       data_c <- data.frame(
@@ -194,19 +192,15 @@ nls2_fit <-
         decay    = decay_v,
         k        = k_v,
         bg       = bg_v,
-        # decay parameter
         se_decay = se_vals$se_decay,
         t_decay  = se_vals$t_decay,
         p_decay  = se_vals$p_decay,
-        # delay parameter
         se_delay = se_vals$se_delay,
         t_delay  = se_vals$t_delay,
         p_delay  = se_vals$p_delay,
-        # k parameter
         se_k     = se_vals$se_k,
         t_k      = se_vals$t_k,
         p_k      = se_vals$p_k,
-        # bg parameter (NA for ABG probes)
         se_bg    = se_vals$se_bg,
         t_bg     = se_vals$t_bg,
         p_bg     = se_vals$p_bg
@@ -214,61 +208,61 @@ nls2_fit <-
       return(data_c)
     }, mc.preschedule = FALSE, mc.cores = cores)
 
-    fit_nls2 <- as.data.frame(do.call(rbind, n_fit))
+    all_cols <- c("ID", "position", "delay", "decay", "k", "bg",
+                  "se_decay", "t_decay", "p_decay",
+                  "se_delay", "t_delay", "p_delay",
+                  "se_k",     "t_k",     "p_k",
+                  "se_bg",    "t_bg",    "p_bg")
+    numeric_cols <- setdiff(all_cols, c("ID", "position"))
+
     if (length(n_fit) == 0) {
-      fit_nls2 <- data.frame(matrix(nrow = 0, ncol = 18))
-      colnames(fit_nls2) <- c("ID", "position", "delay", "decay", "k", "bg",
-                               "se_decay", "t_decay", "p_decay",
-                               "se_delay", "t_delay", "p_delay",
-                               "se_k",     "t_k",     "p_k",
-                               "se_bg",    "t_bg",    "p_bg")
+      fit_nls2 <- as.data.frame(
+        matrix(nrow = 0, ncol = length(all_cols)),
+        stringsAsFactors = FALSE)
+      colnames(fit_nls2) <- all_cols
+    } else {
+      fit_nls2 <- as.data.frame(
+        setNames(
+          lapply(all_cols, function(col) {
+            vals <- sapply(n_fit, function(row) {
+              v <- row[[col]]
+              if (is.null(v) || length(v) == 0) return(NA)
+              v[[1]]
+            })
+            if (col %in% numeric_cols) as.numeric(vals) else as.character(vals)
+          }),
+          all_cols),
+        stringsAsFactors = FALSE)
     }
 
-    inp <- inp[order(rowRanges(inp)$ID), ]
+    inp <- inp[order(rowData(inp)$ID), ]
     fit_nls2 <- fit_nls2[order(fit_nls2$ID), ]
 
     metadata(inp)$fit_STD <- fit_nls2
 
-    rowRanges(inp)$delay[rowRanges(inp)$ID %in% tmp_df$ID]     <- fit_nls2$delay
+    # Standardize column access exclusively to rowData
+    rowData(inp)$delay[rowData(inp)$ID %in% tmp_df$ID]     <- fit_nls2$delay
     rowData(inp)$delay[!is.finite(rowData(inp)$delay)]         <- NA
-    rowRanges(inp)$half_life[rowRanges(inp)$ID %in% tmp_df$ID] <- log(2) / fit_nls2$decay
+    rowData(inp)$half_life[rowData(inp)$ID %in% tmp_df$ID] <- log(2) / fit_nls2$decay
     rowData(inp)$half_life[!is.finite(rowData(inp)$half_life)] <- NA
 
-    # initialise all SE/t/p columns in rowRanges if not present
-    for (col in c("se_decay", "t_decay", "p_decay",
-                  "se_delay", "t_delay", "p_delay",
-                  "se_k",     "t_k",     "p_k",
-                  "se_bg",    "t_bg",    "p_bg")) {
-      if (!col %in% names(mcols(rowRanges(inp)))) {
-        rowRanges(inp)[[col]] <- as.numeric(NA)
+    se_cols <- c("se_decay", "t_decay", "p_decay",
+                 "se_delay", "t_delay", "p_delay",
+                 "se_k",     "t_k",     "p_k",
+                 "se_bg",    "t_bg",    "p_bg")
+
+    for (col in se_cols) {
+      if (!col %in% names(rowData(inp))) {
+        rowData(inp)[[col]] <- rep(as.numeric(NA), nrow(inp))
       }
     }
 
-    # assign values to rowRanges for matching IDs
-    idx <- rowRanges(inp)$ID %in% tmp_df$ID
-
-    rowRanges(inp)$se_decay[idx] <- fit_nls2$se_decay
-    rowRanges(inp)$t_decay[idx]  <- fit_nls2$t_decay
-    rowRanges(inp)$p_decay[idx]  <- fit_nls2$p_decay
-
-    rowRanges(inp)$se_delay[idx] <- fit_nls2$se_delay
-    rowRanges(inp)$t_delay[idx]  <- fit_nls2$t_delay
-    rowRanges(inp)$p_delay[idx]  <- fit_nls2$p_delay
-
-    rowRanges(inp)$se_k[idx]     <- fit_nls2$se_k
-    rowRanges(inp)$t_k[idx]      <- fit_nls2$t_k
-    rowRanges(inp)$p_k[idx]      <- fit_nls2$p_k
-
-    rowRanges(inp)$se_bg[idx]    <- fit_nls2$se_bg
-    rowRanges(inp)$t_bg[idx]     <- fit_nls2$t_bg
-    rowRanges(inp)$p_bg[idx]     <- fit_nls2$p_bg
-
-    # sanitise non-finite values
-    for (col in c("se_decay", "t_decay", "p_decay",
-                  "se_delay", "t_delay", "p_delay",
-                  "se_k",     "t_k",     "p_k",
-                  "se_bg",    "t_bg",    "p_bg")) {
-      rowData(inp)[[col]][!is.finite(rowData(inp)[[col]])] <- NA
+    idx <- rowData(inp)$ID %in% tmp_df$ID
+    
+    for (col in se_cols) {
+      vals <- as.numeric(fit_nls2[[col]])
+      vals[!is.finite(vals)] <- NA
+      rowData(inp)[[col]][idx] <- vals
     }
 
     inp <- inp_order(inp)
